@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>晴れる屋デッキ一括抽出ツール</title>
+    <style>
+        body { font-family: "Helvetica Neue", Arial, sans-serif; max-width: 900px; margin: 0 auto; padding: 20px; background-color: #f4f4f4; color: #333; }
+        .container { background: #fff; padding: 20px; border-radius: 8px; box-shadow: 0 2px 5px rgba(0,0,0,0.1); }
+        h1 { font-size: 22px; margin-top: 0; border-bottom: 1px solid #ddd; padding-bottom: 10px; }
+        
+        /* 入力エリア */
+        .input-area { margin-bottom: 20px; }
+        textarea.url-list { 
+            width: 100%; height: 150px; padding: 10px; 
+            border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; 
+            font-family: monospace; font-size: 13px;
+        }
+        
+        /* 操作ボタン */
+        .controls { margin-bottom: 20px; }
+        button { background-color: #007bff; color: white; padding: 10px 25px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; font-weight: bold; }
+        button:hover { background-color: #0056b3; }
+        button:disabled { background-color: #ccc; cursor: not-allowed; }
+
+        /* 進捗バー */
+        .progress-container { width: 100%; background-color: #e9ecef; border-radius: 4px; margin-bottom: 10px; display: none; }
+        .progress-bar { width: 0%; height: 20px; background-color: #28a745; border-radius: 4px; transition: width 0.3s; }
+        #statusText { font-weight: bold; margin-bottom: 5px; display: block; font-size: 14px; }
+
+        /* 結果エリア */
+        textarea.output-result { 
+            width: 100%; height: 400px; padding: 10px; 
+            border: 1px solid #ccc; border-radius: 4px; 
+            font-family: monospace; background-color: #fafafa; box-sizing: border-box;
+        }
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <h1>晴れる屋デッキ一括抽出</h1>
+    
+    <div class="input-area">
+        <label><strong>デッキURLリスト</strong>（1行に1つのURLを入力）:</label><br>
+        <textarea id="urlList" class="url-list" placeholder="https://www.hareruyamtg.com/ja/deck/1165602/show/&#10;https://www.hareruyamtg.com/ja/deck/xxxxx/show/&#10;..."></textarea>
+    </div>
+
+    <div class="controls">
+        <button id="runBtn" onclick="processUrls()">一括抽出を開始</button>
+        <button onclick="copyToClipboard()" style="background-color: #6c757d; margin-left: 10px;">結果をコピー</button>
+    </div>
+
+    <span id="statusText">待機中...</span>
+    <div class="progress-container" id="progressContainer">
+        <div class="progress-bar" id="progressBar"></div>
+    </div>
+
+    <textarea id="output" class="output-result" placeholder="ここに抽出結果が表示されます..."></textarea>
+</div>
+
+<script>
+    // 待機用関数（サーバー負荷軽減とブロック回避のため）
+    const sleep = msec => new Promise(resolve => setTimeout(resolve, msec));
+
+    async function processUrls() {
+        const urlListText = document.getElementById('urlList').value;
+        const urls = urlListText.split('\n').map(u => u.trim()).filter(u => u.length > 0);
+        
+        const outputArea = document.getElementById('output');
+        const statusText = document.getElementById('statusText');
+        const runBtn = document.getElementById('runBtn');
+        const progressContainer = document.getElementById('progressContainer');
+        const progressBar = document.getElementById('progressBar');
+
+        if (urls.length === 0) {
+            alert("URLを入力してください");
+            return;
+        }
+
+        // 初期化
+        outputArea.value = "";
+        runBtn.disabled = true;
+        progressContainer.style.display = 'block';
+        let results = [];
+        let successCount = 0;
+
+        for (let i = 0; i < urls.length; i++) {
+            const currentUrl = urls[i];
+            const progressPercent = Math.round(((i) / urls.length) * 100);
+            
+            progressBar.style.width = `${progressPercent}%`;
+            statusText.textContent = `処理中 (${i + 1}/${urls.length}): ${currentUrl}`;
+
+            try {
+                // 1. データ取得
+                const extractedData = await fetchDeckData(currentUrl);
+                
+                // 結果に追加（区切り線を入れる）
+                results.push(`### Deck ${i + 1}: ${extractedData.title}\n${currentUrl}\n--------------------------\n${extractedData.list}\n`);
+                successCount++;
+
+            } catch (err) {
+                console.error(err);
+                results.push(`### Deck ${i + 1}: 取得失敗\n${currentUrl}\nエラー: ${err.message}\n--------------------------\n`);
+            }
+
+            // リアルタイムで結果を表示更新
+            outputArea.value = results.join("\n");
+            outputArea.scrollTop = outputArea.scrollHeight; // 自動スクロール
+
+            // 最後のURLでなければ待機（ブロック回避のため2秒待つ）
+            if (i < urls.length - 1) {
+                await sleep(2000); 
+            }
+        }
+
+        // 完了処理
+        progressBar.style.width = "100%";
+        statusText.textContent = `完了！ (${successCount}/${urls.length} 件成功)`;
+        runBtn.disabled = false;
+    }
+
+    async function fetchDeckData(targetUrl) {
+        // プロキシ経由でアクセス
+        const proxyUrl = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`;
+        
+        const response = await fetch(proxyUrl);
+        if (!response.ok) throw new Error(`HTTP Error ${response.status}`);
+        
+        const htmlContent = await response.text();
+        if (htmlContent.length < 500) throw new Error("データが空、またはブロックされました");
+
+        const parser = new DOMParser();
+        const doc = parser.parseFromString(htmlContent, "text/html");
+
+        // タイトル取得（titleタグまたはh1など）
+        let deckTitle = "No Title";
+        const titleEl = doc.querySelector('.deck_header_name') || doc.querySelector('h1');
+        if (titleEl) deckTitle = titleEl.textContent.trim();
+
+        // リスト抽出ロジック
+        let listText = "";
+        const rows = doc.querySelectorAll('.deck_unit_table tr');
+
+        if (rows.length > 0) {
+            rows.forEach(row => {
+                const countEl = row.querySelector('.deck_unit_count');
+                const nameEl = row.querySelector('.deck_unit_card a') || row.querySelector('.deck_unit_card');
+                if (countEl && nameEl) {
+                    listText += `${countEl.textContent.trim()}\t${nameEl.textContent.trim()}\n`;
+                }
+            });
+        } else {
+            // テーブルがない場合の予備ロジック
+            const bodyText = doc.body.textContent;
+            const regex = /([0-9]+)\s+《(.*?)》/g;
+            let match;
+            while ((match = regex.exec(bodyText)) !== null) {
+                listText += `${match[1]}\t${match[2]}\n`;
+            }
+        }
+
+        if (!listText) throw new Error("カード名が見つかりませんでした");
+        
+        return { title: deckTitle, list: listText };
+    }
+
+    function copyToClipboard() {
+        const outputArea = document.getElementById('output');
+        outputArea.select();
+        document.execCommand('copy');
+        alert("クリップボードにコピーしました");
+    }
+</script>
+
+</body>
+</html>
