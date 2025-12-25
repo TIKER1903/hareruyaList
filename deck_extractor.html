@@ -11,22 +11,35 @@
         
         /* 入力エリア */
         .input-area { margin-bottom: 20px; }
+        .search-area { 
+            margin-bottom: 20px; padding-bottom: 20px; border-bottom: 2px dashed #eee; 
+            background-color: #f9fbfd; padding: 15px; border-radius: 5px;
+        }
+
         textarea.url-list { 
             width: 100%; height: 150px; padding: 10px; 
             border: 1px solid #ccc; border-radius: 4px; box-sizing: border-box; 
             font-family: monospace; font-size: 13px;
         }
         
+        input[type="text"] {
+            width: 70%; padding: 8px; border: 1px solid #ccc; border-radius: 4px;
+        }
+
         /* 操作ボタン */
         .controls { margin-bottom: 20px; }
         button { background-color: #007bff; color: white; padding: 10px 25px; border: none; border-radius: 4px; cursor: pointer; font-size: 16px; font-weight: bold; }
         button:hover { background-color: #0056b3; }
         button:disabled { background-color: #ccc; cursor: not-allowed; }
+        
+        .btn-secondary { background-color: #17a2b8; font-size: 14px; padding: 9px 15px;}
+        .btn-secondary:hover { background-color: #138496; }
 
         /* 進捗バー */
         .progress-container { width: 100%; background-color: #e9ecef; border-radius: 4px; margin-bottom: 10px; display: none; }
         .progress-bar { width: 0%; height: 20px; background-color: #28a745; border-radius: 4px; transition: width 0.3s; }
         #statusText { font-weight: bold; margin-bottom: 5px; display: block; font-size: 14px; }
+        #searchStatus { font-size: 13px; margin-left: 10px; color: #666; }
 
         /* 結果エリア */
         textarea.output-result { 
@@ -41,13 +54,22 @@
 <div class="container">
     <h1>晴れる屋デッキ一括抽出</h1>
     
+    <div class="search-area">
+        <label><strong>1. 検索結果URLからリストを取得</strong></label><br>
+        <div style="margin-top: 5px; display: flex; align-items: center;">
+            <input type="text" id="searchUrl" placeholder="https://www.hareruyamtg.com/ja/deck/result?..." value="">
+            <button onclick="getUrlsFromSearch()" class="btn-secondary" style="margin-left: 10px;">リストを取得</button>
+        </div>
+        <div id="searchStatus"></div>
+    </div>
+
     <div class="input-area">
-        <label><strong>デッキURLリスト</strong>（1行に1つのURLを入力）:</label><br>
-        <textarea id="urlList" class="url-list" placeholder="https://www.hareruyamtg.com/ja/deck/1165602/show/&#10;https://www.hareruyamtg.com/ja/deck/xxxxx/show/&#10;..."></textarea>
+        <label><strong>2. デッキURLリスト</strong>（自動入力または手動入力）:</label><br>
+        <textarea id="urlList" class="url-list" placeholder="ここにURLがリストアップされます..."></textarea>
     </div>
 
     <div class="controls">
-        <button id="runBtn" onclick="processUrls()">一括抽出を開始</button>
+        <button id="runBtn" onclick="processUrls()">3. 一括抽出を開始</button>
         <button onclick="copyToClipboard()" style="background-color: #6c757d; margin-left: 10px;">結果をコピー</button>
     </div>
 
@@ -60,9 +82,68 @@
 </div>
 
 <script>
-    // 待機用関数（サーバー負荷軽減とブロック回避のため）
+    // 待機用関数
     const sleep = msec => new Promise(resolve => setTimeout(resolve, msec));
 
+    // ★追加：検索結果ページからデッキURLを取得する関数
+    async function getUrlsFromSearch() {
+        const searchInput = document.getElementById('searchUrl');
+        const targetList = document.getElementById('urlList');
+        const statusLabel = document.getElementById('searchStatus');
+        
+        const url = searchInput.value.trim();
+
+        if (!url) { 
+            alert("検索結果ページのURLを入力してください"); 
+            return; 
+        }
+
+        statusLabel.textContent = "検索ページを読み込み中...";
+        statusLabel.style.color = "blue";
+
+        // CORS回避用プロキシ
+        const proxyUrl = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(url)}`;
+
+        try {
+            const response = await fetch(proxyUrl);
+            if (!response.ok) throw new Error("Network response was not ok");
+            
+            const html = await response.text();
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(html, "text/html");
+
+            // デッキ詳細へのリンクを収集 (href="/ja/deck/xxxxx/show/")
+            const links = doc.querySelectorAll('a[href*="/deck/"][href*="/show/"]');
+            const uniqueUrls = new Set();
+
+            links.forEach(link => {
+                let href = link.getAttribute('href');
+                // 相対パスを絶対パスに変換
+                if (href.startsWith('/')) {
+                    href = 'https://www.hareruyamtg.com' + href;
+                }
+                uniqueUrls.add(href);
+            });
+
+            if (uniqueUrls.size === 0) {
+                statusLabel.textContent = "デッキURLが見つかりませんでした。(非公開リストやログインが必要なページの可能性があります)";
+                statusLabel.style.color = "red";
+                return;
+            }
+
+            // テキストエリアにセット
+            targetList.value = Array.from(uniqueUrls).join('\n');
+            statusLabel.textContent = `成功！ ${uniqueUrls.size} 件のデッキURLを取得しました。下のボタンで抽出を開始してください。`;
+            statusLabel.style.color = "green";
+
+        } catch (e) {
+            console.error(e);
+            statusLabel.textContent = "取得エラー: " + e.message;
+            statusLabel.style.color = "red";
+        }
+    }
+
+    // 既存：各デッキURLからカードリストを抽出する関数
     async function processUrls() {
         const urlListText = document.getElementById('urlList').value;
         const urls = urlListText.split('\n').map(u => u.trim()).filter(u => u.length > 0);
@@ -74,7 +155,7 @@
         const progressBar = document.getElementById('progressBar');
 
         if (urls.length === 0) {
-            alert("URLを入力してください");
+            alert("URLリストが空です。検索から取得するか入力してください。");
             return;
         }
 
@@ -96,7 +177,7 @@
                 // 1. データ取得
                 const extractedData = await fetchDeckData(currentUrl);
                 
-                // 結果に追加（区切り線を入れる）
+                // 結果に追加
                 results.push(`### Deck ${i + 1}: ${extractedData.title}\n${currentUrl}\n--------------------------\n${extractedData.list}\n`);
                 successCount++;
 
@@ -107,11 +188,11 @@
 
             // リアルタイムで結果を表示更新
             outputArea.value = results.join("\n");
-            outputArea.scrollTop = outputArea.scrollHeight; // 自動スクロール
+            outputArea.scrollTop = outputArea.scrollHeight; 
 
-            // 最後のURLでなければ待機（ブロック回避のため2秒待つ）
+            // 最後のURLでなければ待機（ブロック回避のため）
             if (i < urls.length - 1) {
-                await sleep(2000); 
+                await sleep(1500); 
             }
         }
 
@@ -122,7 +203,6 @@
     }
 
     async function fetchDeckData(targetUrl) {
-        // プロキシ経由でアクセス
         const proxyUrl = `https://api.codetabs.com/v1/proxy?quest=${encodeURIComponent(targetUrl)}`;
         
         const response = await fetch(proxyUrl);
@@ -134,12 +214,10 @@
         const parser = new DOMParser();
         const doc = parser.parseFromString(htmlContent, "text/html");
 
-        // タイトル取得（titleタグまたはh1など）
         let deckTitle = "No Title";
         const titleEl = doc.querySelector('.deck_header_name') || doc.querySelector('h1');
         if (titleEl) deckTitle = titleEl.textContent.trim();
 
-        // リスト抽出ロジック
         let listText = "";
         const rows = doc.querySelectorAll('.deck_unit_table tr');
 
@@ -152,7 +230,6 @@
                 }
             });
         } else {
-            // テーブルがない場合の予備ロジック
             const bodyText = doc.body.textContent;
             const regex = /([0-9]+)\s+《(.*?)》/g;
             let match;
